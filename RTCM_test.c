@@ -4,17 +4,79 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 #include <pthread.h>
+#include <Windows.h>
 
-pthreads_mutex_t lock;
-uint8_t *bit29, *bit30;
+pthread_mutex_t lock1, lock2, lock3, lock4;
+uint8_t *word1bit29, *word1bit30, *word2bit29, *word2bit30;
 uint16_t *Z1, *Z2;
 uint32_t *seq;
-*seq = 0;
-*bit29 = 1;
-*bit30 = 1;
 
+void initialize() {
+    word1bit29 = (uint8_t *)malloc(sizeof(uint8_t));
+    if (!word1bit29) {
+        perror("Failed to allocate memory for wordbit29");
+        exit(1);
+    }
+    
+    word1bit30 = (uint8_t *)malloc(sizeof(uint8_t));
+    if (!word1bit30) {
+        perror("Failed to allocate memory for wordbit30");
+        exit(1);
+    }
+
+    word2bit29 = (uint8_t *)malloc(sizeof(uint8_t));
+    if (!word2bit29) {
+        perror("Failed to allocate memory for wordbit29");
+        exit(1);
+    }
+    
+    word2bit30 = (uint8_t *)malloc(sizeof(uint8_t));
+    if (!word2bit30) {
+        perror("Failed to allocate memory for wordbit30");
+        exit(1);
+    }
+    
+    Z1 = (uint16_t *)malloc(sizeof(uint16_t));
+    if (!Z1) {
+        perror("Failed to allocate memory for Z1");
+        exit(1);
+    }
+    
+    Z2 = (uint16_t *)malloc(sizeof(uint16_t));
+    if (!Z2) {
+        perror("Failed to allocate memory for Z2");
+        exit(1);
+    }
+    
+    seq = (uint32_t *)malloc(sizeof(uint32_t));
+    if (!seq) {
+        perror("Failed to allocate memory for seq");
+        exit(1);
+    }
+    
+    *seq = 0;
+    *word1bit29 = 1;
+    *word1bit30 = 1;
+}
+
+
+// void wordbitsync(uint8_t N) {
+
+//     pthread_mutex_lock(&lock4);
+
+//     if(N == 1) {
+//         *word2bit29 = *word1bit29;
+//         *word2bit30 = *word1bit30;
+//     } else if (N == 2) {
+//         *word1bit29 = *word2bit29;
+//         *word1bit30 = *word2bit30;
+//     }
+    
+
+//     pthread_mutex_unlock(&lock4);
+
+// }
 
 uint8_t wordXor(uint32_t word){
     char bit = 0;
@@ -27,6 +89,9 @@ uint8_t wordXor(uint32_t word){
 }
 
 uint8_t ParityCreate(uint32_t word, uint8_t Bit30, uint8_t Bit29){
+
+    pthread_mutex_lock(&lock3);
+
     uint8_t cod = 0;
     uint32_t bufWord = word;
     cod += wordXor(bufWord & 0x3b1f3480) ^ Bit29;
@@ -40,22 +105,25 @@ uint8_t ParityCreate(uint32_t word, uint8_t Bit30, uint8_t Bit29){
     cod += wordXor(bufWord & 0x2bb1f340) ^ Bit30;
     cod <<= 1;
     cod += wordXor(bufWord & 0x0b7a89c0) ^ Bit29;
+
+    pthread_mutex_unlock(&lock3);
+
     return cod;
 }
 
 uint32_t SequencesChanger(uint32_t word) {
 
-    pthreads_mutex_lock(&lock);
-
-    if(*seq == 7) {
+    pthread_mutex_lock(&lock1);
+    uint32_t seqe = *seq;
+    word = (word & 0xfff8fffc) | ((seqe << 16) & 0x00070000);
+    
+    if(seqe == 7) {
         *seq = 0;
     } else {
-        seq = seq + 1;
+        *seq = *seq + 1;
     }
 
-    word = (word & 0xfff8fffc) | ((seq << 14) & 0x0001C000);
-
-    pthreads_mutex_unlock(&lock);
+    pthread_mutex_unlock(&lock1);
     
     return word;
 
@@ -119,32 +187,62 @@ Preamble PreambleSearch(uint64_t potok, uint8_t bit30, uint8_t bit29) {
     return pre;
 }
 
+void COMWriter(uint32_t mes[], uint8_t kadry) {
+
+    pthread_mutex_lock(&lock2);
+//    uint32_t buffer_write;
+    uint8_t buffer, buffer_roll, bit29, bit30, parity;
+
+    bit29 = *word1bit29;
+    bit30 = *word1bit30;
+
+    for(int i = 0; i < (kadry + 2); i++) {
+
+        parity = ParityCreate(((mes[i] >> 2) & 0x3fffffff), bit30, bit29);
+
+        mes[i] = (mes[i] & 0xffffff00) | (parity << 2);
+
+        if(bit30 == 1) {
+            mes[i] = (~mes[i] & 0xffffff00) | mes[i] & 0x000000ff;
+        }
+
+        bit29 = (parity & 0x02) >> 1;
+        bit30 = parity & 0x01;
+
+        mes[i] >>= 2;
+        for(int j = 0; j < 5; j++) {
+            buffer_roll = 0;
+            buffer = (((mes[i] >> 6 * (4 - j)) & 0x3f) << 2);
+            for(int g = 0; g < 8; g++) {
+                uint8_t bit = (buffer >> g) & 0x01;
+                if(bit == 1) {
+                    buffer_roll |= 0x01 << (7 - g);
+                }
+                bit = 0;
+            }
+            buffer_roll |= 0x40;
+            FILE *file = fopen("output.cor", "ab");
+            fwrite(&buffer_roll, sizeof(uint8_t), 1, file);
+            fclose(file);
+        }
+
+    }
+
+    *word1bit29 = bit29;
+    *word1bit30 = bit30;
+    *word2bit29 = bit29;
+    *word2bit30 = bit30;
+    
+
+    pthread_mutex_unlock(&lock2);
+
+}
+
 void* firstCOM() {
 
-    HANDLE PORT4 = CreateFile("COM4", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (PORT4 == INVALID_HANDLE_VALUE) {
-        printf("Error opening COM4\n");
-        Sleep(10000);
-        return;
-    }
-
-    if (!GetCommState(PORT4, &dcb)) {
-        printf("Error getting COM4 port state\n");
-        CloseHandle(PORT4);
-        Sleep(10000);
-        return;
-    }
-
-    HANDLE PORT1 = CreateFile("COM1", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (PORT1 == INVALID_HANDLE_VALUE) {
-        printf("Error opening COM1\n");
-        return 1;
-    }
-
-    if (!GetCommState(PORT1, &dcb)) {
-        printf("Error getting COM1 port state\n");
-        CloseHandle(PORT1);
-        return 1;
+    FILE *file = fopen("1.cor", "rb");
+    if (file == NULL) {
+        printf("Не удалось открыть файл\n");
     }
 
     uint64_t potok;
@@ -152,21 +250,20 @@ void* firstCOM() {
     uint32_t message[31];
     uint16_t Z1count;
     uint8_t buffer, buffer_roll;
-    uint8_t bit29, bit30, parity;
+    uint8_t bit29, bit30, startbit29, startbit30, parity;
     uint8_t cut1, cut2, chislo_kadrov;
     bool parity_result;
-    DWORD Readed;
     bit29 = 1;
     bit30 = 1;
+    startbit29 = bit29;
+    startbit30 = bit30;
+    uint16_t count;
 
     while(1) {
-
+        count++;
         parity_result = false;
-        if (!ReadFile(PORT4, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-            printf("Ошибка чтения данных из файла!\n");
-            Sleep(10000);
-            return 1;
-        }
+        // printf("Первая контрольная точка первого потока\n");
+        fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
         for(int i = 0; i < 8; i++) {
             uint8_t bit = (buffer >> i) & 0x01;
             if(bit == 1) {
@@ -177,8 +274,7 @@ void* firstCOM() {
         potok <<= 6;
         potok += (buffer_roll >> 2) & 0x3f;  
         buffer_roll = 0;
-        buffer = 0; 
-        CloseHandle(PORT4); // Чтение конец
+        buffer = 0; // Чтение конец
 
         Preamble preamble = PreambleSearch(potok, bit30, bit29);
 
@@ -199,18 +295,6 @@ void* firstCOM() {
         }
 
         if(!parity_result) {
-            printf("Ошибка четности: ");
-            for(int i=0; i<30; i++) {
-                int bit = (word >> (31-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("      ");
-            printf("Ошибка четности: ");
-            for(int i=0; i<6; i++) {
-                int bit = (parity >> (5-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("\n");
             continue;
         }
 
@@ -221,33 +305,11 @@ void* firstCOM() {
 
         message[0] = word;
 
-        printf("\nНомер кадра равен: %d\n", (word >> 18) & 0x0000003f);
-        printf("Первый кадр: ");
-        for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("      ");
-
         cut1 = preamble.preamble_place / 6;
         cut2 = 6 - (preamble.preamble_place - cut1 * 6);
         
-        printf("Четность: ");
-        for(int i=0; i<6; i++) {
-            int bit = (parity >> (5-i)) & 0x1;
-            printf("%d", bit);
-        }
-
-        printf("   bit29: %d, bit30: %d", bit29, bit30);
-        printf("\n");
-
-
         for(int i = 0; i < (cut1 + 1); i++) {
-            if (!ReadFile(PORT4, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-            printf("Ошибка чтения данных из файла!\n");
-            Sleep(10000);
-            return 1;
-        }
+        fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
         for(int i = 0; i < 8; i++) {
             uint8_t bit = (buffer >> i) & 0x01;
             if(bit == 1) {
@@ -258,8 +320,7 @@ void* firstCOM() {
         potok <<= 6;
         potok += (buffer_roll >> 2) & 0x3f;  
         buffer_roll = 0;
-        buffer = 0; 
-        CloseHandle(PORT4); // Чтение конец
+        buffer = 0; // Чтение конец
         }
 
         word = (potok >> (cut2 + 2)) & 0xffffffff;
@@ -276,37 +337,15 @@ void* firstCOM() {
 
         message[1] = word;
         Z1count = (word >> 19) & 0x1fff;
-        *Z1 = &Z1count;
 
         bit29 = (parity & 0x02) >> 1;
         bit30 = parity & 0x01;
 
         chislo_kadrov = (message[1] >> 11) & 0x1f;
-    
-        printf("Количество кадров %d: ", ((message[1] >> 11) & 0x1f));
-        printf("\n");
-
-        printf("Второй кадр: ");
-        for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("      ");
-        printf("Четность: ");
-        for(int i=0; i<6; i++) {
-            int bit = (parity >> (5-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("   bit29: %d, bit30: %d", bit29, bit30);
-        printf("\n");
-
+        
         for(int i = 0; i < chislo_kadrov; i++) {
             for(int j = 0; j < 5; j++) {
-                if (!ReadFile(PORT4, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-                    printf("Ошибка чтения данных из файла!\n");
-                    Sleep(10000);
-                    return 1;
-                }
+                fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
                 for(int i = 0; i < 8; i++) {
                     uint8_t bit = (buffer >> i) & 0x01;
                     if(bit == 1) {
@@ -317,10 +356,9 @@ void* firstCOM() {
                 potok <<= 6;
                 potok += (buffer_roll >> 2) & 0x3f;  
                 buffer_roll = 0;
-                buffer = 0; 
-                CloseHandle(PORT4); // Чтение конец
+                buffer = 0; // Чтение конец
             }
-
+            
             
             word = (potok >> (cut2 + 2)) & 0xffffffff;
             if(bit30 == 1) {
@@ -330,90 +368,59 @@ void* firstCOM() {
             bit29 = (parity & 0x02) >> 1;
             bit30 = parity & 0x01;
             message[i+2] = word;
-
-            for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-            }
-            printf("      ");
-            printf("Четность: ");
-            for(int i=0; i<6; i++) {
-                int bit = (parity >> (5-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("   bit29: %d, bit30: %d", bit29, bit30);
-            printf("\n");
-
         }
         
         message[1] = SequencesChanger(message[1]);
+        // startbit29 = *word1bit29;
+        // startbit30 = *word1bit30;
 
-        for(int i = 0; i < (chislo_kadrov + 2); i++) {
-            parity = ParityCreate(((message[i] >> 2) & 0x3fffffff), *bit30, *bit29);
-            *bit29 = (parity >> 1) & 0x01;
-            *bit30 = parity & 0x01;
-            message[i] = (message[i] & 0xffffff00) | ((parity << 2) & 0xfc);
-        }
+        // for(int i = 0; i < (chislo_kadrov + 2); i++) {
+        //     parity = ParityCreate(((message[i] >> 2) & 0x3fffffff), startbit30, startbit29);
+        //     startbit29 = (parity >> 1) & 0x01;
+        //     startbit30 = parity & 0x01;
+        //     message[i] = (message[i] & 0xffffff00) | ((parity << 2) & 0xfc);
+        // }
 
-        if (!WriteFile(PORT1, message, sizeof(message), NULL, NULL)) {
-            printf("Error writing to COM1 port\n");
-            CloseHandle(PORT1);
-            return 1;
-        }
+        // *word1bit29 = startbit29;
+        // *word1bit30 = startbit30;
+        uint8_t Np = 1;
+        Sleep(50);
+        // wordbitsync(Np);
+        
+        COMWriter(message, chislo_kadrov);
+        
+        
+        
 
     }
-    CloseHandle(PORT4);
-    CloseHandle(PORT1);
+    fclose(file);
 }
 
 void* secondCOM() {
-
-    HANDLE PORT5 = CreateFile("COM1", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (PORT5 == INVALID_HANDLE_VALUE) {
-        printf("Error opening COM1\n");
-        Sleep(10000);
-        return;
+    // printf("Вход во второй поток\n");
+    FILE *file = fopen("2.cor", "rb");
+    if (file == NULL) {
+        printf("Не удалось открыть файл\n");
     }
-
-    if (!GetCommState(PORT5, &dcb)) {
-        printf("Error getting COM1 port state\n");
-        CloseHandle(PORT5);
-        Sleep(10000);
-        return;
-    }
-
-    HANDLE PORT1 = CreateFile("COM1", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (PORT1 == INVALID_HANDLE_VALUE) {
-        printf("Error opening COM1\n");
-        return 1;
-    }
-
-    if (!GetCommState(PORT1, &dcb)) {
-        printf("Error getting COM1 port state\n");
-        CloseHandle(PORT1);
-        return 1;
-    }
-
+    // printf("Открытие файла вторым потоком\n");
     uint64_t potok;
     uint32_t word;
     uint32_t message[31];
     uint16_t Z2count;
     uint8_t buffer, buffer_roll;
-    uint8_t bit29, bit30, parity;
+    uint8_t bit29, bit30, startbit29, startbit30, parity;
     uint8_t cut1, cut2, chislo_kadrov;
     bool parity_result;
-    DWORD Readed;
     bit29 = 1;
     bit30 = 1;
+    startbit29 = bit29;
+    startbit30 = bit30;
+    uint16_t count;
 
     while(1) {
-
+        count++;
         parity_result = false;
-        if (!ReadFile(PORT5, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-            printf("Ошибка чтения данных из файла!\n");
-            Sleep(10000);
-            return 1;
-        }
+        fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
         for(int i = 0; i < 8; i++) {
             uint8_t bit = (buffer >> i) & 0x01;
             if(bit == 1) {
@@ -424,8 +431,7 @@ void* secondCOM() {
         potok <<= 6;
         potok += (buffer_roll >> 2) & 0x3f;  
         buffer_roll = 0;
-        buffer = 0; 
-        CloseHandle(PORT5); // Чтение конец
+        buffer = 0; // Чтение конец
 
         Preamble preamble = PreambleSearch(potok, bit30, bit29);
 
@@ -446,18 +452,6 @@ void* secondCOM() {
         }
 
         if(!parity_result) {
-            printf("Ошибка четности: ");
-            for(int i=0; i<30; i++) {
-                int bit = (word >> (31-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("      ");
-            printf("Ошибка четности: ");
-            for(int i=0; i<6; i++) {
-                int bit = (parity >> (5-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("\n");
             continue;
         }
 
@@ -468,33 +462,12 @@ void* secondCOM() {
 
         message[0] = word;
 
-        printf("\nНомер кадра равен: %d\n", (word >> 18) & 0x0000003f);
-        printf("Первый кадр: ");
-        for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("      ");
-
         cut1 = preamble.preamble_place / 6;
         cut2 = 6 - (preamble.preamble_place - cut1 * 6);
         
-        printf("Четность: ");
-        for(int i=0; i<6; i++) {
-            int bit = (parity >> (5-i)) & 0x1;
-            printf("%d", bit);
-        }
-
-        printf("   bit29: %d, bit30: %d", bit29, bit30);
-        printf("\n");
-
-
+        // printf("Вторая контрольная точка второго потока\n");
         for(int i = 0; i < (cut1 + 1); i++) {
-            if (!ReadFile(PORT5, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-            printf("Ошибка чтения данных из файла!\n");
-            Sleep(10000);
-            return 1;
-        }
+        fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
         for(int i = 0; i < 8; i++) {
             uint8_t bit = (buffer >> i) & 0x01;
             if(bit == 1) {
@@ -505,8 +478,7 @@ void* secondCOM() {
         potok <<= 6;
         potok += (buffer_roll >> 2) & 0x3f;  
         buffer_roll = 0;
-        buffer = 0; 
-        CloseHandle(PORT5); // Чтение конец
+        buffer = 0; // Чтение конец
         }
 
         word = (potok >> (cut2 + 2)) & 0xffffffff;
@@ -524,38 +496,17 @@ void* secondCOM() {
         message[1] = word;
 
         Z2count = (word >> 19) & 0x1fff;
-        *Z2 = &Z2count;
-
+        
+        // *Z2 = Z2count;
 
         bit29 = (parity & 0x02) >> 1;
         bit30 = parity & 0x01;
 
         chislo_kadrov = (message[1] >> 11) & 0x1f;
-    
-        printf("Количество кадров %d: ", ((message[1] >> 11) & 0x1f));
-        printf("\n");
-
-        printf("Второй кадр: ");
-        for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("      ");
-        printf("Четность: ");
-        for(int i=0; i<6; i++) {
-            int bit = (parity >> (5-i)) & 0x1;
-            printf("%d", bit);
-        }
-        printf("   bit29: %d, bit30: %d", bit29, bit30);
-        printf("\n");
-
+        
         for(int i = 0; i < chislo_kadrov; i++) {
             for(int j = 0; j < 5; j++) {
-                if (!ReadFile(PORT5, buffer, sizeof(buffer), &Readed, NULL)) { // Чтение начало
-                    printf("Ошибка чтения данных из файла!\n");
-                    Sleep(10000);
-                    return 1;
-                }
+                fread(&buffer, sizeof(buffer), 1, file); // Чтение начало
                 for(int i = 0; i < 8; i++) {
                     uint8_t bit = (buffer >> i) & 0x01;
                     if(bit == 1) {
@@ -566,10 +517,9 @@ void* secondCOM() {
                 potok <<= 6;
                 potok += (buffer_roll >> 2) & 0x3f;  
                 buffer_roll = 0;
-                buffer = 0; 
-                CloseHandle(PORT5); // Чтение конец
+                buffer = 0; // Чтение конец
             }
-
+            
             
             word = (potok >> (cut2 + 2)) & 0xffffffff;
             if(bit30 == 1) {
@@ -579,45 +529,37 @@ void* secondCOM() {
             bit29 = (parity & 0x02) >> 1;
             bit30 = parity & 0x01;
             message[i+2] = word;
-
-            for(int i=0; i<30; i++) {
-            int bit = (word >> (31-i)) & 0x1;
-            printf("%d", bit);
-            }
-            printf("      ");
-            printf("Четность: ");
-            for(int i=0; i<6; i++) {
-                int bit = (parity >> (5-i)) & 0x1;
-                printf("%d", bit);
-            }
-            printf("   bit29: %d, bit30: %d", bit29, bit30);
-            printf("\n");
-
         }
         
         message[1] = SequencesChanger(message[1]);
+        // printf("Третья контрольная точка второго потока\n");
+        // startbit29 = *word2bit29;
+        // startbit30 = *word2bit30;
 
-        for(int i = 0; i < (chislo_kadrov + 2); i++) {
-            parity = ParityCreate(((message[i] >> 2) & 0x3fffffff), *bit30, *bit29);
-            *bit29 = (parity >> 1) & 0x01;
-            *bit30 = parity & 0x01;
-            message[i] = (message[i] & 0xffffff00) | ((parity << 2) & 0xfc);
-        }
+        // for(int i = 0; i < (chislo_kadrov + 2); i++) {
+        //     parity = ParityCreate(((message[i] >> 2) & 0x3fffffff), startbit30, startbit29);
+        //     startbit29 = (parity >> 1) & 0x01;
+        //     startbit30 = parity & 0x01;
+        //     message[i] = (message[i] & 0xffffff00) | ((parity << 2) & 0xfc);
+        // }
 
-        if (!WriteFile(PORT1, message, sizeof(message), NULL, NULL)) {
-            printf("Error writing to COM1 port\n");
-            CloseHandle(PORT1);
-            return 1;
-        }
+        uint8_t Np = 2;
+        Sleep(50);
+        // wordbitsync(Np);
+        
+        COMWriter(message, chislo_kadrov);
+
+        
         
     }
-    CloseHandle(PORT5);
-    CloseHandle(PORT1);
+    fclose(file);
 }
 
 int main(){
 
     pthread_t thread1, thread2;
+    
+    initialize();
 
     // Создание первого потока
     if (pthread_create(&thread1, NULL, firstCOM, NULL) != 0) {
